@@ -1,0 +1,72 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pyc
+*.log
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv/
+.ENV/
+
+# Dependency files
+*.egg-info/
+*.egg
+dist/
+build/
+pip-wheel-metadata/
+
+# VSCode
+.vscode/
+
+# PyCharm
+.idea/
+
+# OS-specific
+.DS_Store
+Thumbs.db
+
+# Environments
+.env
+.env.*
+
+# SQLite DB or local db
+*.sqlite3
+*.db
+
+# WeasyPrint temp files (optional)
+weasyprint-temp*
+
+# Pytest cache
+.pytest_cache/
+
+# Coverage reports
+htmlcov/
+.coverage
+.cache
+
+# Jupyter Notebook
+.ipynb_checkpoints/
+
+# PDFs / output files (optional)
+*.pdf
+*.xlsx
+
+# Mypy / Pylint / Ruff / etc.
+.mypy_cache/
+.pylint.d/
+ruff_cache/
+
+# Test results
+test-results/
+
+# Static generated files (optional)
+staticfiles/
+
+# Docker (if using)
+*.tar
+docker-compose.override.yml
