@@ -31,7 +31,8 @@
             <table style="width: 100%; border-collapse: collapse; margin-bottom: 20px;">
                 <thead style="background-color: #f1f1f1; color: #333;">
                     <tr>
-                        <th style="padding: 8px; text-align: left;">Date</th>
+                        <th style="padding: 8px; text-align: left;">Time in</th>
+                        <th style="padding: 8px; text-align: left;">Time out</th>
                         <th style="padding: 8px; text-align: right;">Overtime</th>
                         <th style="padding: 8px; text-align: right;">Night Differential</th>
                         <th style="padding: 8px; text-align: right;">Allowance</th>
@@ -42,7 +43,8 @@
                 <tbody>
                     {% for payroll in payrolls %}
                     <tr>
-                        <td style="padding: 8px;">{{ payroll.date }}</td>
+                        <td style="padding: 8px;">{{ payroll.time_in }}</td>
+                        <td style="padding: 8px;">{{ payroll.time_out }}</td>
                         <td style="padding: 8px;">{{ payroll.overtime_pay }}</td>
                         <td style="padding: 8px;">{{ payroll.night_differential_pay }}</td>
                         <td style="padding: 8px;">{{ payroll.allowance }}</td>

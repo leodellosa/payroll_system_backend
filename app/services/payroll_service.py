@@ -1,12 +1,12 @@
 from typing import List, Optional
 from app.models.payroll import Payroll
-from app.schemas.payroll import PayrollSchema
+from app.schemas.payroll import PayrollSchema, PayrollResponse,PayrollCreate,PayrollUpdate
 from sqlalchemy.orm import Session
 from sqlalchemy.inspection import inspect
 from app.models.employee import Employee
 from sqlalchemy.exc import IntegrityError
 from fastapi import HTTPException
-from weasyprint import HTML
+from weasyprint import HTML, CSS
 from jinja2 import Environment, FileSystemLoader
 import os
 from decimal import Decimal
@@ -23,14 +23,14 @@ def get_employee_or_404(db: Session, employee_id: int):
         raise HTTPException(status_code=404, detail=f"Employee with ID {employee_id} not found")
     return employee
 
-def get_all_payrolls(db: Session) -> List[PayrollSchema]:
+def get_all_payrolls(db: Session) -> List[PayrollResponse]:
     payrolls = db.query(Payroll).all()
     return [
-        PayrollSchema(**{c.key: getattr(payroll, c.key) for c in inspect(Payroll).mapper.column_attrs})
+        PayrollResponse(**{c.key: getattr(payroll, c.key) for c in inspect(Payroll).mapper.column_attrs})
         for payroll in payrolls
     ]
 
-def generate_payroll(db: Session, payroll_data: PayrollSchema, employee_id: int) -> dict:
+def generate_payroll(db: Session, payroll_data: PayrollCreate, employee_id: int) -> dict:
     get_employee_or_404(db, employee_id)
     try:
         new_payroll = Payroll(**payroll_data.model_dump())
@@ -46,7 +46,7 @@ def generate_payroll(db: Session, payroll_data: PayrollSchema, employee_id: int)
         db.rollback()
         return {"success": False, "error": str(e), "code": 500}
     
-def update_payroll(db: Session, payroll_id: int, payroll_data: PayrollSchema) -> dict:
+def update_payroll(db: Session, payroll_id: int, payroll_data: PayrollUpdate) -> dict:
     payroll = db.query(Payroll).filter(Payroll.id == payroll_id).first()
     if not payroll:
         return {"success": False, "error": "Payroll record not found", "code": 404}
@@ -94,10 +94,10 @@ def get_payroll_summary(
         payrolls = payrolls_query.all()
 
         if not payrolls:
-            return {"success": False, "error": "No payroll records found for the specified date range.", "code": 404}   
+            return {"success": False, "error": "No payroll records found.", "code": 404}   
 
         payrolls_data = [
-            PayrollSchema(**{c.key: getattr(payroll, c.key) for c in inspect(Payroll).mapper.column_attrs})
+            PayrollResponse(**{c.key: getattr(payroll, c.key) for c in inspect(Payroll).mapper.column_attrs})
             for payroll in payrolls
         ]
         return {"success": True, "payrolls": payrolls_data}
@@ -152,7 +152,13 @@ def generate_payslip_pdf(employee_id: int, db: Session) -> dict:
         output_path = f"pdf/payslip_{employee.first_name}_{employee.last_name}_{current_date.strftime('%Y%m%d_%H%M%S')}.pdf"
         os.makedirs("pdf", exist_ok=True)
         base_url = os.path.abspath("app/static")
-        pdf_bytes = HTML(string=html_content, base_url=base_url).write_pdf()
+        landscape_css = CSS(string='''
+        @page {
+            size: A4 landscape;
+            margin: 1cm;
+        }
+        ''')
+        pdf_bytes = HTML(string=html_content, base_url=base_url).write_pdf(stylesheets=[landscape_css])
         with open(output_path, "wb") as f:
             f.write(pdf_bytes)
 
@@ -170,7 +176,7 @@ def generate_payslip_pdf(employee_id: int, db: Session) -> dict:
         }
     
 
-def generate_payslip_excel(db: Session, employee_id: int):
+def generate_payslip_excel(db: Session, employee_id: int) -> dict:
     employee = get_employee_or_404(db, employee_id)
     payrolls = db.query(Payroll).filter(Payroll.employee_id == employee_id).all()
 
@@ -317,7 +323,7 @@ def fill_missing_values(df: pd.DataFrame) -> pd.DataFrame:
     for column in df.columns:
         for index, value in df[column].items():
             if pd.isna(value):
-                if column in ['daily_rate', 'allowance', 'total_hours_worked',
+                if column in ['allowance', 'total_hours_worked',
                               'overtime_pay', 'overtime_hour', 'night_differential_pay',
                               'night_differential_hour', 'deductions', 'subtotal', 'net_salary']:
                     df.at[index, column] = Decimal('0.00')
@@ -325,12 +331,12 @@ def fill_missing_values(df: pd.DataFrame) -> pd.DataFrame:
                     df.at[index, column] = ''
     return df
 
-def batch_upload_payroll(db: Session, excel_file: UploadFile = File(...)):
+async def batch_upload_payroll(db: Session, excel_file: UploadFile = File(...))-> dict:
     """
     Upload an Excel file and batch insert payroll records.
     """
     try:
-        content = excel_file.read()
+        content = await excel_file.read()
         df = pd.read_excel(BytesIO(content))
 
         # Validate required columns
@@ -354,7 +360,6 @@ def batch_upload_payroll(db: Session, excel_file: UploadFile = File(...)):
 
                 payroll = Payroll(
                     employee_id=row['employee_id'],
-                    daily_rate=row['daily_rate'],
                     allowance=row['allowance'],
                     total_hours_worked=row['total_hours_worked'],
                     overtime_pay=row['overtime_pay'],
@@ -368,7 +373,8 @@ def batch_upload_payroll(db: Session, excel_file: UploadFile = File(...)):
                     date=date_value,
                     time_in=datetime.combine(date_value, time_in),
                     time_out=datetime.combine(date_value, time_out),
-                    project=row.get('project', '')
+                    project=row.get('project', ''),
+                    created_at= datetime.now()
                 )
 
                 payroll_records.append(payroll)
@@ -384,9 +390,33 @@ def batch_upload_payroll(db: Session, excel_file: UploadFile = File(...)):
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=f"An error occurred: {str(e)}")
+    
+    
+def download_payroll_template():
+    """
+    Generate and download an Excel template for payroll data entry.
+    """
+    columns = [
+        'employee_id', 'allowance', 'total_hours_worked', 'overtime_pay', 
+        'overtime_hour', 'night_differential_pay', 'night_differential_hour', 
+        'deductions', 'deduction_remarks', 'subtotal', 'net_salary', 'date', 
+        'time_in', 'time_out', 'project'
+    ]
+    data = {col: [''] if col in ['employee_id', 'deduction_remarks', 'project', 'date', 'time_in', 'time_out'] else [0] for col in columns}
+    df = pd.DataFrame(data)
 
+    # Write Excel to in-memory buffer
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        df.to_excel(writer, index=False, sheet_name='Payroll Template')
 
+    output.seek(0)
 
+    headers = {
+        'Content-Disposition': 'attachment; filename=payroll_template.xlsx'
+    }
+
+    return StreamingResponse(output, media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', headers=headers)
 
 
 

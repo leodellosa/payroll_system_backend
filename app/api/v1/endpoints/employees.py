@@ -3,17 +3,26 @@ from typing import List, Optional
 from fastapi import Query, Depends, HTTPException
 from sqlalchemy.orm import Session
 from app.db.session import get_session
-from app.schemas.employee import EmployeeBase
-from app.services.employee_service import get_all_employees, get_filtered_employees, create_employee, update_employee, update_employee_status
+from app.schemas.employee import EmployeeResponse,EmployeeCreate,EmployeeUpdate
+from app.services.employee_service import (
+    get_all_employees,
+    get_employee_by_id,
+    get_filtered_employees,
+    create_employee,
+    update_employee,
+    update_employee_status,
+    delete_employee,
+)
 
 
 router = APIRouter()
 
-@router.get("/", response_model=List[EmployeeBase])
+@router.get("/", response_model=List[EmployeeResponse])
 def read_users(db: Session = Depends(get_session)):
     return get_all_employees(db)
 
-@router.get("/employeeList", response_model=List[EmployeeBase])
+
+@router.get("/employeeList", response_model=List[EmployeeResponse])
 async def employee_list(
     search: Optional[str] = Query(None),
     hire_date_from: Optional[str] = Query(None),
@@ -31,10 +40,20 @@ async def employee_list(
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"An error occurred: {str(e)}")
+
+@router.get("/{employee_id}", response_model=EmployeeResponse)
+async def read_employee(
+    employee_id: int,
+    db: Session = Depends(get_session)
+):
+    employee = get_employee_by_id(db, employee_id)
+    if not employee:
+        raise HTTPException(status_code=404, detail="Employee not found")
+    return employee
     
-@router.post("/employee/add",  response_model=EmployeeBase)
+@router.post("/employee/add",  response_model=dict)
 async def add_employee_submit(
-    employee: EmployeeBase, 
+    employee: EmployeeCreate, 
     db: Session = Depends(get_session)
 ):
     result = create_employee(
@@ -43,22 +62,22 @@ async def add_employee_submit(
     )
 
     if result["success"]:
-        return result["employee"]
+        return result
     else:
         raise HTTPException(status_code=400, detail=result["error"])
     
-@router.put("/employee/edit/{employee_id}", response_model=EmployeeBase, tags=["Employees"])
+@router.put("/employee/edit/{employee_id}", response_model=dict)
 async def edit_employee_submit(
     employee_id: int,
-    updated_employee: EmployeeBase,
+    updated_employee: EmployeeUpdate,
     db: Session = Depends(get_session),
 ):
     result = update_employee(db, employee_id, updated_employee)
     if not result["success"]:
         raise HTTPException(status_code=result.get("code", 400), detail=result["error"])
-    return result["employee"]
+    return result
 
-@router.put("/employee/status/{employee_id}", response_model=EmployeeBase, tags=["Employees"])
+@router.put("/employee/status/{employee_id}", response_model=EmployeeResponse)
 async def edit_employee_status(
     employee_id: int,
     status: str,
@@ -68,3 +87,13 @@ async def edit_employee_status(
     if not result["success"]:
         raise HTTPException(status_code=result.get("code", 400), detail=result["error"])
     return result["employee"]
+
+@router.delete("/employee/delete/{employee_id}", response_model=dict)
+async def delete_employee_submit(
+    employee_id: int,
+    db: Session = Depends(get_session),
+):
+    result = delete_employee(db, employee_id)
+    if not result["success"]:
+        raise HTTPException(status_code=result.get("code", 400), detail=result["error"])
+    return result
