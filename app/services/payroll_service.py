@@ -30,6 +30,16 @@ def get_all_payrolls(db: Session) -> List[PayrollResponse]:
         for payroll in payrolls
     ]
 
+def get_payroll_by_id(db: Session, payroll_id: int) -> dict:
+    payroll = db.query(Payroll).filter(Payroll.id == payroll_id).first()
+    if not payroll:
+        return {"success": False, "error": "Payroll record not found", "code": 404}
+    
+    return {
+        "success": True,
+        "payroll": PayrollResponse(**{c.key: getattr(payroll, c.key) for c in inspect(Payroll).mapper.column_attrs})
+    }
+
 def generate_payroll(db: Session, payroll_data: PayrollCreate, employee_id: int) -> dict:
     get_employee_or_404(db, employee_id)
     try:
@@ -106,29 +116,30 @@ def get_payroll_summary(
         return {"success": False, "error": str(e), "code": 500}
     
 
-def generate_payslip_pdf(employee_id: int, db: Session) -> dict:
-
+def generate_payslip_pdf(employee_id: int, db: Session) -> StreamingResponse:
     employee = get_employee_or_404(db, employee_id)
+    
     try:
         payrolls = db.query(Payroll).filter(Payroll.employee_id == employee_id).all()
+
+        
         if not payrolls:
-            return {"success": False, "error": "No payroll records found for this employee.", "code": 404}
+            raise HTTPException(status_code=404, detail="No payroll records found for this employee.")
 
         # Payroll summary
-        total_hours_worked = sum(p.total_hours_worked or Decimal(0) for p in payrolls)
-        total_overtime_pay = sum(p.overtime_pay or Decimal(0) for p in payrolls)
-        total_night_diff = sum(p.night_differential_pay or Decimal(0) for p in payrolls)
-        total_deductions = sum(p.deductions or Decimal(0) for p in payrolls)
-        allowance = sum(p.allowance or Decimal(0) for p in payrolls)
-        gross_salary = sum(p.subtotal or Decimal(0) for p in payrolls)
-        net_salary = sum(p.net_salary or Decimal(0) for p in payrolls)
+        total_hours_worked = sum(Decimal(p.total_hours_worked) if p.total_hours_worked else Decimal(0) for p in payrolls)
+        total_overtime_pay = sum(Decimal(p.overtime_pay) if p.overtime_pay else Decimal(0) for p in payrolls)
+        total_night_diff = sum(Decimal(p.night_differential_pay) if p.night_differential_pay else Decimal(0) for p in payrolls)
+        total_deductions = sum(Decimal(p.deductions) if p.deductions else Decimal(0) for p in payrolls)
+        allowance = sum(Decimal(p.allowance) if p.allowance else Decimal(0) for p in payrolls)
+        gross_salary = sum(Decimal(p.subtotal) if p.subtotal else Decimal(0) for p in payrolls)
+        net_salary = sum(Decimal(p.net_salary) if p.net_salary else Decimal(0) for p in payrolls)
         pay_period_from = min(p.date for p in payrolls)
         pay_period_to = max(p.date for p in payrolls)
-        daily_rate = employee.salary
+        daily_rate = Decimal(employee.salary)  # Ensure employee salary is Decimal
         current_date = datetime.now()
 
         # Render HTML with Jinja2
-        print("Current working directory:", os.getcwd())
         template_env = Environment(loader=FileSystemLoader("app/templates"))
         template = template_env.get_template("payroll_payslip.html") 
         html_content = template.render(
@@ -139,41 +150,84 @@ def generate_payslip_pdf(employee_id: int, db: Session) -> dict:
             total_night_diff=total_night_diff,
             total_deductions=total_deductions,
             allowance=allowance,
-            gross_salary=gross_salary,
-            net_salary=net_salary,
+            total_gross_salary=gross_salary,
+            total_net_salary=net_salary,
             pay_period_from=pay_period_from,
             pay_period_to=pay_period_to,
             current_date=current_date,
             daily_rate=daily_rate
         )
         
-        print(employee)
-        # Generate and save PDF file
-        output_path = f"pdf/payslip_{employee.first_name}_{employee.last_name}_{current_date.strftime('%Y%m%d_%H%M%S')}.pdf"
-        os.makedirs("pdf", exist_ok=True)
-        base_url = os.path.abspath("app/static")
+        # Generate PDF from HTML
         landscape_css = CSS(string='''
-        @page {
-            size: A4 landscape;
-            margin: 1cm;
-        }
-        ''')
-        pdf_bytes = HTML(string=html_content, base_url=base_url).write_pdf(stylesheets=[landscape_css])
-        with open(output_path, "wb") as f:
-            f.write(pdf_bytes)
+            @page {
+                size: A4 landscape;
+                margin: 1cm;
+            }
 
-        return {
-            "success": True,
-            "message": "Payslip PDF generated successfully.",
-            "filename": os.path.basename(output_path),
-            "path": output_path
-        }
+            body {
+                font-family: Arial, sans-serif;
+                font-size: 12px;
+            }
+
+            table {
+                width: 100%;
+                border-collapse: collapse;
+                page-break-inside: auto;
+            }
+
+            thead {
+                display: table-header-group;
+            }
+
+            tfoot {
+                display: table-footer-group;
+            }
+
+            tr {
+                page-break-inside: avoid;
+                page-break-after: auto;
+            }
+
+            td, th {
+                border: 1px solid #ccc;
+                padding: 6px;
+                text-align: left;
+            }
+
+            .payslip-container {
+                page-break-inside: avoid;
+            }
+        ''')
+        base_url = os.path.abspath("app/static")
+
+        # Generate the PDF bytes
+        pdf_bytes = HTML(string=html_content,base_url=base_url).write_pdf(stylesheets=[landscape_css])
+
+        # Return PDF as a StreamingResponse
+        pdf_stream = BytesIO(pdf_bytes)
+        filename = f"payslip_{employee.first_name}_{employee.last_name}_{current_date.strftime('%Y%m%d_%H%M%S')}.pdf"
+        return StreamingResponse(pdf_stream, media_type="application/pdf", headers={
+            "Content-Disposition": f"attachment; filename={filename}"
+        })
+       
+        # output_path = f"pdf/payslip_{employee.first_name}_{employee.last_name}_{current_date.strftime('%Y%m%d_%H%M%S')}.pdf"
+        # os.makedirs("pdf", exist_ok=True)
+        # base_url = os.path.abspath("app/static")
+        # pdf_bytes = HTML(string=html_content, base_url=base_url).write_pdf(stylesheets=[landscape_css])
+        # with open(output_path, "wb") as f:
+        #     f.write(pdf_bytes)
+
+        # return {
+        #     "success": True,
+        #     "message": "Payslip PDF generated successfully.",
+        #     "filename": os.path.basename(output_path),
+        #     "path": output_path
+        # }
 
     except Exception as e:
-        return {
-            "success": False,
-            "error": f"An error occurred during PDF generation: {str(e)}"
-        }
+        # If any exception occurs, raise an HTTP error
+        raise HTTPException(status_code=500, detail=f"An error occurred: {str(e)}")
     
 
 def generate_payslip_excel(db: Session, employee_id: int) -> dict:
@@ -248,13 +302,13 @@ def generate_payslip_excel(db: Session, employee_id: int) -> dict:
                 round(payroll.net_salary, 2),
             ])
 
-        total_hours = sum(p.total_hours_worked for p in payrolls)
-        total_ot = sum(p.overtime_pay for p in payrolls)
-        total_nd = sum(p.night_differential_pay for p in payrolls)
-        total_allowance = sum(p.allowance for p in payrolls)
-        total_deductions = sum(p.deductions for p in payrolls)
-        total_gross = sum(p.subtotal for p in payrolls)
-        total_net = sum(p.net_salary for p in payrolls)
+        total_hours = sum(float(p.total_hours_worked or 0) for p in payrolls)
+        total_ot = sum(float(p.overtime_pay or 0) for p in payrolls)
+        total_nd = sum(float(p.night_differential_pay or 0) for p in payrolls)
+        total_allowance = sum(float(p.allowance or 0) for p in payrolls)
+        total_deductions = sum(float(p.deductions or 0) for p in payrolls)
+        total_gross = sum(float(p.subtotal or 0) for p in payrolls)
+        total_net = sum(float(p.net_salary or 0) for p in payrolls)
 
         row_offset += 2
         summary_data = [
@@ -271,34 +325,34 @@ def generate_payslip_excel(db: Session, employee_id: int) -> dict:
             ws[f'A{row_offset}'] = f"{label}: {value}"
             row_offset += 1
 
-        folder_path = "excel"
-        os.makedirs(folder_path, exist_ok=True)
+        # folder_path = "excel"
+        # os.makedirs(folder_path, exist_ok=True)
 
         # Generate the file name
-        filename = f"payslip_{employee.first_name}_{employee.last_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
-        file_path = os.path.join(folder_path, filename)
+        # filename = f"payslip_{employee.first_name}_{employee.last_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+        # file_path = os.path.join(folder_path, filename)
 
         # Save the file to the folder
-        wb.save(file_path)
+        # wb.save(file_path)
 
-        return {
-            "success": True,
-            "message": "Payslip Excel file generated successfully.",
-            "filename": filename,
-            "path": file_path
-        }
-
-        # Write to buffer
-        # output = BytesIO()
-        # wb.save(output)
-        # output.seek(0)
-
-        # filename = f"payslip_{employee.first_name}_{employee.last_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
-        # headers = {
-        #     "Content-Disposition": f"attachment; filename={filename}"
+        # return {
+        #     "success": True,
+        #     "message": "Payslip Excel file generated successfully.",
+        #     "filename": filename,
+        #     "path": file_path
         # }
 
-        # return StreamingResponse(output, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", headers=headers)
+        # Write to buffer
+        output = BytesIO()
+        wb.save(output)
+        output.seek(0)
+
+        filename = f"payslip_{employee.first_name}_{employee.last_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+        headers = {
+            "Content-Disposition": f"attachment; filename={filename}"
+        }
+
+        return StreamingResponse(output, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", headers=headers)
     except Exception as e:      
         raise HTTPException(status_code=500, detail=f"An error occurred while generating the payslip: {str(e)}")
 
@@ -337,7 +391,7 @@ async def batch_upload_payroll(db: Session, excel_file: UploadFile = File(...))-
     """
     try:
         content = await excel_file.read()
-        df = pd.read_excel(BytesIO(content))
+        df = pd.read_excel(BytesIO(content), engine='openpyxl')
 
         # Validate required columns
         for column in REQUIRED_COLUMNS:
@@ -417,6 +471,7 @@ def download_payroll_template():
     }
 
     return StreamingResponse(output, media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', headers=headers)
+
 
 
 

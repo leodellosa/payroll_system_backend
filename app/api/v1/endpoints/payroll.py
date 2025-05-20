@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 from app.db.session import get_session
 from app.schemas.payroll import PayrollSchema, PayrollResponse,PayrollCreate,PayrollUpdate
 from fastapi import status
+from fastapi.responses import StreamingResponse
 from app.services.payroll_service import(
     get_all_payrolls,
     generate_payroll,
@@ -14,7 +15,8 @@ from app.services.payroll_service import(
     generate_payslip_pdf,
     generate_payslip_excel,
     batch_upload_payroll,
-    download_payroll_template
+    download_payroll_template,
+    get_payroll_by_id
 )
     
 router = APIRouter()
@@ -22,6 +24,22 @@ router = APIRouter()
 @router.get("/", response_model=List[PayrollResponse])
 def read_users(db: Session = Depends(get_session)):
     return get_all_payrolls(db)
+
+@router.get("/download-template")
+def download_template():
+    try:
+        return download_payroll_template()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to generate template: {str(e)}")
+    
+"""
+    Open Postman
+    Look in the response panel
+    The response will show up as a binary file (.xlsx content).
+    In the bottom right corner of the response tab, Postman will show a “Save Response” button (icon).
+    Click it → Choose “Save to a file” → name it payroll_template.xlsx.
+"""
+
 
 @router.post("/generate", response_model=PayrollResponse,status_code=status.HTTP_201_CREATED)
 def create_payroll(
@@ -74,6 +92,7 @@ def generate_payroll_summary(
     night_differential_pay = sum(p.night_differential_pay or 0 for p in payrolls)
     deductions = sum(p.deductions or 0 for p in payrolls)
     allowance = sum(p.allowance or 0 for p in payrolls)
+    gross_salary = sum(p.subtotal or 0 for p in payrolls)
     net_salary = sum(p.net_salary or 0 for p in payrolls)
 
     return {
@@ -84,31 +103,40 @@ def generate_payroll_summary(
             "night_differential_pay": night_differential_pay,
             "deductions": deductions,
             "allowance": allowance,
+            "gross_salary": gross_salary,
             "net_salary": net_salary,
         }
     }
 
-@router.get("/payslip/pdf", response_model=dict)
-def generate_payslip(
-    employee_id: int,
+@router.get("/{payroll_id}", response_model=dict)
+def read_payroll(
+    payroll_id: int,
     db: Session = Depends(get_session)
 ):
-    result = generate_payslip_pdf(employee_id, db)
+    result = get_payroll_by_id(db, payroll_id)
     if not result["success"]:
         raise HTTPException(status_code=result.get("code", 400), detail=result["error"])
     
     return result
 
-@router.get("/payslip/excel", response_model=dict)
+@router.get("/payslip/pdf", response_class=StreamingResponse)
+def generate_payslip(
+    employee_id: int,
+    db: Session = Depends(get_session)
+):
+    try:
+        return generate_payslip_pdf(employee_id, db)
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/payslip/excel")
 def generate_payslip_excel_file(
     employee_id: int,
     db: Session = Depends(get_session)
 ):
-    result = generate_payslip_excel(db, employee_id)
-    if not result["success"]:
-        raise HTTPException(status_code=result.get("code", 400), detail=result["error"])
-    
-    return result
+    return generate_payslip_excel(db, employee_id)
 
 @router.post("/batch-upload", response_model=dict)
 async def batch_upload_payroll_data(
@@ -129,17 +157,3 @@ async def batch_upload_payroll_data(
     Set the type to File using the dropdown.
     Upload your .xlsx file in the Value column."""
 
-@router.get("/download-template")
-def download_template():
-    try:
-        return download_payroll_template()
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to generate template: {str(e)}")
-    
-"""
-    Open Postman
-    Look in the response panel
-    The response will show up as a binary file (.xlsx content).
-    In the bottom right corner of the response tab, Postman will show a “Save Response” button (icon).
-    Click it → Choose “Save to a file” → name it payroll_template.xlsx.
-"""

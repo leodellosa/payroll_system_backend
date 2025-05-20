@@ -31,8 +31,8 @@ pip-wheel-metadata/
 Thumbs.db
 
 # Environments
-.env
-.env.*
+# .env
+# .env.*
 
 # SQLite DB or local db
 *.sqlite3
